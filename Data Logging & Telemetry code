@@ -1,0 +1,45 @@
+#include <SD.h>
+#include <SPI.h>
+
+class DataLogger {
+private:
+  File logFile;
+  bool sdCardPresent = false;
+  
+public:
+  void init() {
+    if(SD.begin(4)) { // CS pin 4
+      sdCardPresent = true;
+      createNewLogFile();
+    }
+  }
+  
+  void createNewLogFile() {
+    String filename = "/log_" + String(millis()) + ".csv";
+    logFile = SD.open(filename, FILE_WRITE);
+    if(logFile) {
+      logFile.println("Timestamp,Lat,Lng,Speed,Battery,US_Dist,TOF_Dist,Mode");
+    }
+  }
+  
+  void logData() {
+    if(!sdCardPresent) return;
+    
+    logFile.print(millis());
+    logFile.print(",");
+    logFile.print(currentLat, 6);
+    logFile.print(",");
+    logFile.print(currentLng, 6);
+    logFile.print(",");
+    logFile.print(currentSpeed);
+    logFile.print(",");
+    logFile.print(batteryVoltage);
+    logFile.print(",");
+    logFile.print(ultrasonicDistance);
+    logFile.print(",");
+    logFile.print(tofDistance);
+    logFile.print(",");
+    logFile.println(currentMode);
+    logFile.flush();
+  }
+};
