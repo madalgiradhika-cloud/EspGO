@@ -1,0 +1,29 @@
+// Missing motor control functions
+class MotorController {
+private:
+  int currentLeftSpeed = 0;
+  int currentRightSpeed = 0;
+  unsigned long lastPWMUpdate = 0;
+  
+public:
+  void smoothSpeedTransition(int targetLeft, int targetRight) {
+    // Add acceleration/deceleration ramping
+    int step = 5;
+    while(abs(currentLeftSpeed - targetLeft) > step) {
+      currentLeftSpeed += (targetLeft > currentLeftSpeed) ? step : -step;
+      currentRightSpeed += (targetRight > currentRightSpeed) ? step : -step;
+      applySpeed(currentLeftSpeed, currentRightSpeed);
+      delay(10);
+    }
+  }
+  
+  void emergencyStop() {
+    // Immediate stop with motor braking
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, LOW);
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, LOW);
+    analogWrite(ENA, 0);
+    analogWrite(ENB, 0);
+  }
+};
