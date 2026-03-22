@@ -1,0 +1,13 @@
+// Missing mobile app API endpoints
+const API_ENDPOINTS = {
+  'GET /api/status': 'Get robot status',
+  'POST /api/control': 'Send control commands',
+  'POST /api/route': 'Upload navigation route',
+  'GET /api/telemetry/stream': 'Real-time telemetry',
+  'POST /api/calibrate': 'Start calibration',
+  'GET /api/logs': 'Get error logs',
+  'POST /api/update': 'Firmware update',
+  'GET /api/map': 'Get map data',
+  'POST /api/waypoint': 'Add waypoint',
+  'DELETE /api/waypoint/:id': 'Remove waypoint'
+};
