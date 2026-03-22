@@ -1,0 +1,18 @@
+// Add task priorities
+#define TASK_GPS_PRIORITY 2
+#define TASK_MOTOR_PRIORITY 3
+#define TASK_SENSOR_PRIORITY 1
+#define TASK_NETWORK_PRIORITY 1
+#define TASK_NAVIGATION_PRIORITY 2
+
+// Add FreeRTOS tasks
+void setupTasks() {
+  xTaskCreatePinnedToCore(
+    gpsTask, "GPS", 4096, NULL, TASK_GPS_PRIORITY, NULL, 0);
+  xTaskCreatePinnedToCore(
+    motorTask, "Motor", 2048, NULL, TASK_MOTOR_PRIORITY, NULL, 0);
+  xTaskCreatePinnedToCore(
+    sensorTask, "Sensor", 2048, NULL, TASK_SENSOR_PRIORITY, NULL, 1);
+  xTaskCreatePinnedToCore(
+    networkTask, "Network", 8192, NULL, TASK_NETWORK_PRIORITY, NULL, 1);
+}
