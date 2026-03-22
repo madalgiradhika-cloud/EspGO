@@ -1,0 +1,30 @@
+class BatteryMonitor {
+private:
+  const int BATTERY_PIN = 35;
+  const float VOLTAGE_DIVIDER = 2.0; // Voltage divider ratio
+  const float MIN_VOLTAGE = 10.5;    // 3S LiPo minimum
+  const float MAX_VOLTAGE = 12.6;    // 3S LiPo fully charged
+  
+  float voltage = 0;
+  float percentage = 100;
+  unsigned long lastRead = 0;
+  
+public:
+  void update() {
+    if(millis() - lastRead > 1000) {
+      int raw = analogRead(BATTERY_PIN);
+      voltage = (raw / 4095.0) * 3.3 * VOLTAGE_DIVIDER;
+      percentage = ((voltage - MIN_VOLTAGE) / (MAX_VOLTAGE - MIN_VOLTAGE)) * 100;
+      percentage = constrain(percentage, 0, 100);
+      lastRead = millis();
+    }
+  }
+  
+  bool isLow() {
+    return voltage < MIN_VOLTAGE + 0.5; // Warning at 11.0V
+  }
+  
+  bool isCritical() {
+    return voltage < MIN_VOLTAGE; // Critical at 10.5V
+  }
+};
