@@ -1,0 +1,36 @@
+#include <MPU6050_tockn.h>
+#include <HMC5883L.h>
+
+class NavigationSensor {
+private:
+  MPU6050 mpu6050;
+  HMC5883L compass;
+  float yaw = 0;
+  float pitch = 0;
+  float roll = 0;
+  float heading = 0;
+  
+public:
+  void init() {
+    Wire.begin();
+    mpu6050.begin();
+    mpu6050.calcGyroOffsets(true);
+    compass.begin();
+  }
+  
+  void update() {
+    mpu6050.update();
+    yaw = mpu6050.getAngleZ();
+    pitch = mpu6050.getAngleX();
+    roll = mpu6050.getAngleY();
+    
+    // Get magnetometer heading
+    compass.read();
+    heading = compass.getHeadingDegrees();
+  }
+  
+  float getHeading() {
+    // Fuse gyro and magnetometer data
+    return heading * 0.7 + yaw * 0.3; // Complementary filter
+  }
+};
