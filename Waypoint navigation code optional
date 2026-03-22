@@ -1,0 +1,56 @@
+class WaypointNavigator {
+private:
+  struct Waypoint {
+    double lat;
+    double lng;
+    String name;
+    bool reached = false;
+  };
+  
+  Waypoint waypoints[50];
+  int waypointCount = 0;
+  int currentWaypoint = 0;
+  
+public:
+  void addWaypoint(double lat, double lng, String name) {
+    if(waypointCount < 50) {
+      waypoints[waypointCount] = {lat, lng, name, false};
+      waypointCount++;
+    }
+  }
+  
+  void loadRouteFromJSON(String json) {
+    // Parse JSON route from mobile app
+    DynamicJsonDocument doc(4096);
+    deserializeJson(doc, json);
+    JsonArray route = doc["waypoints"];
+    for(JsonObject wp : route) {
+      addWaypoint(wp["lat"], wp["lng"], wp["name"].as<String>());
+    }
+  }
+  
+  bool navigate() {
+    if(currentWaypoint >= waypointCount) return true;
+    
+    Waypoint& target = waypoints[currentWaypoint];
+    float distance = calculateDistance(currentLat, currentLng, target.lat, target.lng);
+    
+    if(distance < 5.0) { // 5 meters threshold
+      target.reached = true;
+      currentWaypoint++;
+      return false; // Not at final waypoint yet
+    }
+    
+    // Navigate to current waypoint
+    float bearing = calculateBearing(currentLat, currentLng, target.lat, target.lng);
+    // Apply PID control
+    return false;
+  }
+  
+  void reset() {
+    currentWaypoint = 0;
+    for(int i = 0; i < waypointCount; i++) {
+      waypoints[i].reached = false;
+    }
+  }
+};
