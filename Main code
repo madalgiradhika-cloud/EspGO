@@ -1,0 +1,633 @@
+/*
+ * Autonomous Robot with ESP32, NEO-6M GPS, 4WD Motors, VL53L0X, HC-SR04
+ * Features:
+ * - GPS Navigation (NEO-6M)
+ * - Obstacle Detection (VL53L0X Time-of-Flight + HC-SR04 Ultrasonic)
+ * - WiFi Mobile Control (Web Interface)
+ * - 4WD Motor Control (L298N)
+ * - Autonomous Navigation Modes
+ */
+
+#include <Wire.h>
+#include <TinyGPS++.h>
+#include <HardwareSerial.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <VL53L0X.h>
+#include <ArduinoJson.h>
+
+// ==================== PIN DEFINITIONS ====================
+// Motor Control Pins (L298N)
+#define ENA 13      // PWM for left motors
+#define IN1 12      // Left motors forward
+#define IN2 14      // Left motors backward
+#define ENB 27      // PWM for right motors
+#define IN3 26      // Right motors forward
+#define IN4 25      // Right motors backward
+
+// HC-SR04 Ultrasonic Pins
+#define TRIG_PIN 32
+#define ECHO_PIN 33
+
+// I2C Pins for VL53L0X (Default: SDA=21, SCL=22)
+#define SDA_PIN 21
+#define SCL_PIN 22
+
+// IR Sensors (Optional)
+#define IR_LEFT 34
+#define IR_RIGHT 35
+#define LED_BUILTIN 2
+
+// ==================== CONFIGURATION ====================
+// WiFi Credentials
+const char* ssid = "ESP32_Robot";
+const char* password = "12345678";
+
+// GPS Configuration
+TinyGPSPlus gps;
+HardwareSerial SerialGPS(2); // UART2 for GPS
+
+// VL53L0X Object
+VL53L0X tofSensor;
+
+// Web Server
+WebServer server(80);
+
+// Motor Speed Constants
+#define MAX_SPEED 220
+#define MIN_SPEED 0
+#define TURN_SPEED 150
+#define BASE_SPEED 180
+#define SLOW_SPEED 120
+
+// Navigation Modes
+enum Mode {
+  MODE_IDLE,
+  MODE_MANUAL,
+  MODE_GPS_NAVIGATION,
+  MODE_OBSTACLE_AVOIDANCE,
+  MODE_AUTONOMOUS
+};
+
+Mode currentMode = MODE_IDLE;
+Mode previousMode = MODE_IDLE;
+
+// Navigation Variables
+double targetLat = 0.0;
+double targetLng = 0.0;
+bool hasTarget = false;
+float currentHeading = 0.0;
+float targetHeading = 0.0;
+float headingError = 0.0;
+
+// Sensor Readings
+int ultrasonicDistance = 0;    // HC-SR04 distance (cm)
+int tofDistance = 0;           // VL53L0X distance (mm)
+int leftDistance = 0, rightDistance = 0, frontDistance = 0;
+bool obstacleDetected = false;
+bool emergencyStop = false;
+
+// Manual Control Variables
+int manualSpeed = 180;
+String manualDirection = "STOP";
+
+// Timing Variables
+unsigned long lastGPSTime = 0;
+unsigned long lastSensorTime = 0;
+unsigned long lastMotorUpdate = 0;
+unsigned long lastWebSocketTime = 0;
+
+// Status Variables
+float currentLat = 0.0, currentLng = 0.0;
+float currentSpeed = 0.0;
+float batteryVoltage = 12.0;
+int gpsSatellites = 0;
+String robotStatus = "Initializing...";
+
+// ==================== MOTOR CONTROL FUNCTIONS ====================
+void motorControl(int leftSpeed, int rightSpeed, String direction) {
+  // Constrain speeds
+  leftSpeed = constrain(leftSpeed, -MAX_SPEED, MAX_SPEED);
+  rightSpeed = constrain(rightSpeed, -MAX_SPEED, MAX_SPEED);
+  
+  if (direction == "FORWARD") {
+    digitalWrite(IN1, HIGH);
+    digitalWrite(IN2, LOW);
+    digitalWrite(IN3, HIGH);
+    digitalWrite(IN4, LOW);
+    analogWrite(ENA, abs(leftSpeed));
+    analogWrite(ENB, abs(rightSpeed));
+  }
+  else if (direction == "BACKWARD") {
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, HIGH);
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, HIGH);
+    analogWrite(ENA, abs(leftSpeed));
+    analogWrite(ENB, abs(rightSpeed));
+  }
+  else if (direction == "LEFT") {
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, HIGH);
+    digitalWrite(IN3, HIGH);
+    digitalWrite(IN4, LOW);
+    analogWrite(ENA, TURN_SPEED);
+    analogWrite(ENB, TURN_SPEED);
+  }
+  else if (direction == "RIGHT") {
+    digitalWrite(IN1, HIGH);
+    digitalWrite(IN2, LOW);
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, HIGH);
+    analogWrite(ENA, TURN_SPEED);
+    analogWrite(ENB, TURN_SPEED);
+  }
+  else if (direction == "STOP") {
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, LOW);
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, LOW);
+    analogWrite(ENA, 0);
+    analogWrite(ENB, 0);
+  }
+}
+
+void stopMotors() {
+  motorControl(0, 0, "STOP");
+}
+
+// ==================== SENSOR FUNCTIONS ====================
+int readUltrasonic() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  
+  long duration = pulseIn(ECHO_PIN, HIGH, 30000); // 30ms timeout
+  if (duration == 0) return 400; // No echo, return max distance
+  
+  int distance = duration * 0.034 / 2;
+  return constrain(distance, 2, 400);
+}
+
+int readVL53L0X() {
+  return tofSensor.readRangeSingleMillimeters();
+}
+
+void readAllSensors() {
+  // Read HC-SR04
+  ultrasonicDistance = readUltrasonic();
+  
+  // Read VL53L0X (Time-of-Flight)
+  tofDistance = readVL53L0X();
+  
+  // Use the smaller distance for obstacle detection (more conservative)
+  frontDistance = min(ultrasonicDistance, tofDistance / 10); // Convert mm to cm
+  
+  // Check for obstacles (threshold 30cm)
+  obstacleDetected = (frontDistance < 30 && frontDistance > 0);
+  
+  if (obstacleDetected && currentMode == MODE_AUTONOMOUS) {
+    robotStatus = "Obstacle detected! Distance: " + String(frontDistance) + "cm";
+    avoidObstacle();
+  }
+}
+
+void avoidObstacle() {
+  stopMotors();
+  delay(100);
+  
+  // Scan left and right
+  motorControl(0, 0, "LEFT");
+  delay(500);
+  int leftDist = readUltrasonic();
+  stopMotors();
+  
+  motorControl(0, 0, "RIGHT");
+  delay(500);
+  int rightDist = readUltrasonic();
+  stopMotors();
+  
+  // Choose best direction
+  if (leftDist > rightDist) {
+    motorControl(0, 0, "LEFT");
+    delay(800);
+    robotStatus = "Avoiding obstacle to the left";
+  } else {
+    motorControl(0, 0, "RIGHT");
+    delay(800);
+    robotStatus = "Avoiding obstacle to the right";
+  }
+  
+  stopMotors();
+  delay(200);
+}
+
+// ==================== GPS FUNCTIONS ====================
+void updateGPS() {
+  while (SerialGPS.available() > 0) {
+    gps.encode(SerialGPS.read());
+  }
+  
+  if (gps.location.isValid()) {
+    currentLat = gps.location.lat();
+    currentLng = gps.location.lng();
+    currentSpeed = gps.speed.kmph();
+    gpsSatellites = gps.satellites.value();
+  }
+}
+
+float calculateBearing(float lat1, float lon1, float lat2, float lon2) {
+  float dLon = (lon2 - lon1) * PI / 180;
+  float y = sin(dLon) * cos(lat2 * PI / 180);
+  float x = cos(lat1 * PI / 180) * sin(lat2 * PI / 180) - 
+            sin(lat1 * PI / 180) * cos(lat2 * PI / 180) * cos(dLon);
+  float bearing = atan2(y, x) * 180 / PI;
+  if (bearing < 0) bearing += 360;
+  return bearing;
+}
+
+float calculateDistance(float lat1, float lon1, float lat2, float lon2) {
+  float dLat = (lat2 - lat1) * PI / 180;
+  float dLon = (lon2 - lon1) * PI / 180;
+  float a = sin(dLat/2) * sin(dLat/2) + 
+            cos(lat1 * PI / 180) * cos(lat2 * PI / 180) * 
+            sin(dLon/2) * sin(dLon/2);
+  float c = 2 * atan2(sqrt(a), sqrt(1-a));
+  return 6371000 * c; // Distance in meters
+}
+
+void navigateToTarget() {
+  if (!hasTarget || !gps.location.isValid()) {
+    stopMotors();
+    return;
+  }
+  
+  float distanceToTarget = calculateDistance(currentLat, currentLng, targetLat, targetLng);
+  
+  if (distanceToTarget < 5.0) { // Within 5 meters
+    stopMotors();
+    hasTarget = false;
+    robotStatus = "Target reached!";
+    currentMode = MODE_IDLE;
+    return;
+  }
+  
+  float bearing = calculateBearing(currentLat, currentLng, targetLat, targetLng);
+  float headingError = bearing - currentHeading;
+  
+  // Normalize heading error
+  if (headingError > 180) headingError -= 360;
+  if (headingError < -180) headingError += 360;
+  
+  // Adjust motor speeds based on heading error
+  int leftSpeed, rightSpeed;
+  
+  if (abs(headingError) < 10) {
+    // Go straight
+    leftSpeed = BASE_SPEED;
+    rightSpeed = BASE_SPEED;
+    motorControl(leftSpeed, rightSpeed, "FORWARD");
+  } else if (headingError > 0) {
+    // Turn right
+    leftSpeed = TURN_SPEED;
+    rightSpeed = TURN_SPEED / 2;
+    motorControl(leftSpeed, rightSpeed, "FORWARD");
+  } else {
+    // Turn left
+    leftSpeed = TURN_SPEED / 2;
+    rightSpeed = TURN_SPEED;
+    motorControl(leftSpeed, rightSpeed, "FORWARD");
+  }
+  
+  robotStatus = "Navigating to target. Distance: " + String(distanceToTarget) + "m";
+}
+
+// ==================== WEB SERVER FUNCTIONS ====================
+void handleRoot() {
+  String html = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 Robot Control</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .control-panel {
+            background: rgba(255,255,255,0.1);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            backdrop-filter: blur(10px);
+        }
+        .joystick-area {
+            display: flex;
+            justify-content: center;
+            margin: 20px 0;
+        }
+        .joystick {
+            width: 200px;
+            height: 200px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 50%;
+            position: relative;
+            cursor: pointer;
+            touch-action: none;
+        }
+        .joystick-handle {
+            width: 60px;
+            height: 60px;
+            background: white;
+            border-radius: 50%;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            box-shadow: 0 0 10px rgba(0,0,0,0.3);
+        }
+        .mode-buttons {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+            margin: 20px 0;
+        }
+        button {
+            background: rgba(255,255,255,0.2);
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            color: white;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        button:hover {
+            background: rgba(255,255,255,0.3);
+            transform: scale(1.05);
+        }
+        button.active {
+            background: #4CAF50;
+            box-shadow: 0 0 10px rgba(76,175,80,0.5);
+        }
+        .sensor-data {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+        .sensor-card {
+            background: rgba(0,0,0,0.3);
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        .sensor-value {
+            font-size: 24px;
+            font-weight: bold;
+            margin-top: 10px;
+        }
+        .status {
+            background: rgba(0,0,0,0.5);
+            padding: 10px;
+            border-radius: 8px;
+            margin-top: 20px;
+            text-align: center;
+        }
+        .speed-control {
+            margin: 20px 0;
+        }
+        input[type="range"] {
+            width: 100%;
+            margin: 10px 0;
+        }
+        .gps-input {
+            margin: 20px 0;
+        }
+        .gps-input input {
+            padding: 10px;
+            margin: 5px;
+            border-radius: 5px;
+            border: none;
+            width: calc(50% - 12px);
+        }
+        @media (max-width: 768px) {
+            .joystick { width: 150px; height: 150px; }
+            .joystick-handle { width: 45px; height: 45px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 ESP32 Autonomous Robot</h1>
+        
+        <div class="control-panel">
+            <h2>🎮 Manual Control</h2>
+            <div class="joystick-area">
+                <div class="joystick" id="joystick">
+                    <div class="joystick-handle" id="joystickHandle"></div>
+                </div>
+            </div>
+            
+            <div class="speed-control">
+                <label>Speed: <span id="speedValue">180</span></label>
+                <input type="range" id="speedSlider" min="0" max="255" value="180">
+            </div>
+        </div>
+        
+        <div class="control-panel">
+            <h2>🚀 Navigation Modes</h2>
+            <div class="mode-buttons">
+                <button onclick="setMode('idle')" id="modeIdle">⏹️ Idle</button>
+                <button onclick="setMode('manual')" id="modeManual">🎮 Manual</button>
+                <button onclick="setMode('gps')" id="modeGps">📍 GPS Navigation</button>
+                <button onclick="setMode('autonomous')" id="modeAuto">🤖 Autonomous</button>
+            </div>
+            
+            <div class="gps-input">
+                <h3>Set GPS Target</h3>
+                <input type="text" id="targetLat" placeholder="Latitude (e.g., 37.7749)">
+                <input type="text" id="targetLng" placeholder="Longitude (e.g., -122.4194)">
+                <button onclick="setGPSTarget()">Set Target</button>
+            </div>
+        </div>
+        
+        <div class="control-panel">
+            <h2>📊 Sensor Data</h2>
+            <div class="sensor-data">
+                <div class="sensor-card">
+                    <div>📡 GPS Position</div>
+                    <div class="sensor-value" id="gpsPos">--</div>
+                </div>
+                <div class="sensor-card">
+                    <div>🛰️ Satellites</div>
+                    <div class="sensor-value" id="satellites">0</div>
+                </div>
+                <div class="sensor-card">
+                    <div>📏 HC-SR04</div>
+                    <div class="sensor-value" id="ultrasonic">-- cm</div>
+                </div>
+                <div class="sensor-card">
+                    <div>🔬 VL53L0X</div>
+                    <div class="sensor-value" id="tof">-- mm</div>
+                </div>
+                <div class="sensor-card">
+                    <div>⚡ Speed</div>
+                    <div class="sensor-value" id="speed">0 km/h</div>
+                </div>
+            </div>
+            <div class="status" id="status">Waiting for connection...</div>
+        </div>
+    </div>
+    
+    <script>
+        let ws;
+        let joystickActive = false;
+        let joystickPos = { x: 0, y: 0 };
+        
+        // Connect WebSocket
+        function connectWebSocket() {
+            ws = new WebSocket('ws://' + window.location.hostname + ':81');
+            
+            ws.onopen = function() {
+                console.log('WebSocket connected');
+                document.getElementById('status').innerHTML = 'Connected to robot';
+            };
+            
+            ws.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                updateUI(data);
+            };
+            
+            ws.onclose = function() {
+                console.log('WebSocket disconnected');
+                document.getElementById('status').innerHTML = 'Disconnected - reconnecting...';
+                setTimeout(connectWebSocket, 2000);
+            };
+        }
+        
+        function updateUI(data) {
+            document.getElementById('gpsPos').innerHTML = data.lat + ', ' + data.lng;
+            document.getElementById('satellites').innerHTML = data.satellites;
+            document.getElementById('ultrasonic').innerHTML = data.ultrasonic + ' cm';
+            document.getElementById('tof').innerHTML = data.tof + ' mm';
+            document.getElementById('speed').innerHTML = data.speed + ' km/h';
+            document.getElementById('status').innerHTML = data.status;
+            
+            // Update active mode button
+            document.querySelectorAll('.mode-buttons button').forEach(btn => btn.classList.remove('active'));
+            if (data.mode === 'idle') document.getElementById('modeIdle').classList.add('active');
+            if (data.mode === 'manual') document.getElementById('modeManual').classList.add('active');
+            if (data.mode === 'gps') document.getElementById('modeGps').classList.add('active');
+            if (data.mode === 'autonomous') document.getElementById('modeAuto').classList.add('active');
+        }
+        
+        function setMode(mode) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ command: 'mode', mode: mode }));
+            }
+        }
+        
+        function setGPSTarget() {
+            const lat = parseFloat(document.getElementById('targetLat').value);
+            const lng = parseFloat(document.getElementById('targetLng').value);
+            if (!isNaN(lat) && !isNaN(lng) && ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ command: 'gps_target', lat: lat, lng: lng }));
+            }
+        }
+        
+        // Joystick control
+        const joystick = document.getElementById('joystick');
+        const handle = document.getElementById('joystickHandle');
+        const speedSlider = document.getElementById('speedSlider');
+        const speedValue = document.getElementById('speedValue');
+        
+        speedSlider.oninput = function() {
+            speedValue.innerHTML = this.value;
+            if (ws && ws.readyState === WebSocket.OPEN && joystickActive) {
+                sendJoystickCommand();
+            }
+        };
+        
+        function getJoystickPosition(event) {
+            const rect = joystick.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            let x, y;
+            
+            if (event.touches) {
+                x = event.touches[0].clientX - centerX;
+                y = event.touches[0].clientY - centerY;
+            } else {
+                x = event.clientX - centerX;
+                y = event.clientY - centerY;
+            }
+            
+            const radius = rect.width / 2;
+            const distance = Math.sqrt(x*x + y*y);
+            if (distance > radius) {
+                x = x * radius / distance;
+                y = y * radius / distance;
+            }
+            
+            return { x: x / radius, y: y / radius };
+        }
+        
+        function updateJoystickPosition(x, y) {
+            const radius = joystick.offsetWidth / 2;
+            const left = x * radius;
+            const top = y * radius;
+            handle.style.transform = `translate(calc(-50% + ${left}px), calc(-50% + ${top}px))`;
+            joystickPos = { x, y };
+        }
+        
+        function sendJoystickCommand() {
+            const speed = parseInt(speedSlider.value);
+            const x = joystickPos.x;
+            const y = joystickPos.y;
+            ws.send(JSON.stringify({ command: 'manual', x: x, y: y, speed: speed }));
+        }
+        
+        joystick.addEventListener('mousedown', (e) => {
+            joystickActive = true;
+            const pos = getJoystickPosition(e);
+            updateJoystickPosition(pos.x, pos.y);
+            sendJoystickCommand();
+            
+            const onMove = (e) => {
+                const newPos = getJoystickPosition(e);
+                updateJoystickPosition(newPos.x, newPos.y);
+                sendJoystickCommand();
+            };
+            
+            const onUp = () => {
+                joystickActive = false;
+                updateJoystickPosition(0, 0);
+                sendJoystickCommand();
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+            };
+            
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        });
+        
+        joystick.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            joystickActive = true;
+            const pos = g
