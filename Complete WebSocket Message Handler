@@ -1,0 +1,20 @@
+void completeWebSocketHandler(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
+  switch(type) {
+    case WStype_TEXT:
+      // Parse and handle all commands
+      break;
+      
+    case WStype_BIN:
+      // Handle binary data (images, firmware updates)
+      break;
+      
+    case WStype_ERROR:
+      // Handle errors
+      break;
+      
+    case WStype_PING:
+      // Respond to keep-alive
+      webSocket.sendPing(num);
+      break;
+  }
+}
