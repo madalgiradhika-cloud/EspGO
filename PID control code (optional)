@@ -1,0 +1,33 @@
+class PIDController {
+private:
+  float kp = 1.5;
+  float ki = 0.05;
+  float kd = 0.8;
+  
+  float integral = 0;
+  float prevError = 0;
+  unsigned long lastTime = 0;
+  
+public:
+  float calculate(float setpoint, float input) {
+    unsigned long now = millis();
+    float dt = (now - lastTime) / 1000.0;
+    if(dt <= 0) dt = 0.01;
+    
+    float error = setpoint - input;
+    integral += error * dt;
+    integral = constrain(integral, -100, 100);
+    
+    float derivative = (error - prevError) / dt;
+    float output = kp * error + ki * integral + kd * derivative;
+    
+    prevError = error;
+    lastTime = now;
+    
+    return constrain(output, -255, 255);
+  }
+  
+  void setTunings(float p, float i, float d) {
+    kp = p; ki = i; kd = d;
+  }
+};
