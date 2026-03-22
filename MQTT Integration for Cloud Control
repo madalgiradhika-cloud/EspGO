@@ -1,0 +1,57 @@
+#include <PubSubClient.h>
+
+class CloudController {
+private:
+  WiFiClient espClient;
+  PubSubClient mqtt;
+  
+  const char* mqtt_server = "mqtt.your-server.com";
+  const char* mqtt_user = "robot";
+  const char* mqtt_password = "secure123";
+  
+public:
+  void init() {
+    mqtt.setServer(mqtt_server, 1883);
+    mqtt.setCallback([this](char* topic, byte* payload, unsigned int length) {
+      this->callback(topic, payload, length);
+    });
+  }
+  
+  void reconnect() {
+    while(!mqtt.connected()) {
+      if(mqtt.connect("ESP32_Robot", mqtt_user, mqtt_password)) {
+        mqtt.subscribe("robot/commands");
+        mqtt.subscribe("robot/gps_target");
+      }
+      delay(5000);
+    }
+  }
+  
+  void callback(char* topic, byte* payload, unsigned int length) {
+    String message = String((char*)payload, length);
+    
+    if(String(topic) == "robot/commands") {
+      processCommand(message);
+    } else if(String(topic) == "robot/gps_target") {
+      // Parse and set GPS target
+      DynamicJsonDocument doc(256);
+      deserializeJson(doc, message);
+      targetLat = doc["lat"];
+      targetLng = doc["lng"];
+      hasTarget = true;
+    }
+  }
+  
+  void publishStatus() {
+    StaticJsonDocument<512> doc;
+    doc["lat"] = currentLat;
+    doc["lng"] = currentLng;
+    doc["speed"] = currentSpeed;
+    doc["battery"] = batteryVoltage;
+    doc["mode"] = currentMode;
+    
+    String output;
+    serializeJson(doc, output);
+    mqtt.publish("robot/status", output.c_str());
+  }
+};
