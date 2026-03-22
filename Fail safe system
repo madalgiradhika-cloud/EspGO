@@ -1,0 +1,40 @@
+class FailSafe {
+private:
+  unsigned long lastCommandTime = 0;
+  unsigned long lastGPSFix = 0;
+  bool emergencyMode = false;
+  
+public:
+  void update() {
+    // Check for lost connection
+    if(millis() - lastCommandTime > 10000) { // 10 seconds no command
+      emergencyMode = true;
+      stopMotors();
+    }
+    
+    // Check for GPS signal loss
+    if(!gps.location.isValid()) {
+      if(millis() - lastGPSFix > 30000) { // 30 seconds no GPS
+        emergencyMode = true;
+        stopMotors();
+      }
+    } else {
+      lastGPSFix = millis();
+    }
+    
+    // Check battery
+    if(batteryVoltage < 10.5) {
+      emergencyMode = true;
+      stopMotors();
+      // Send alert
+    }
+    
+    // Check motor current draw
+    // Check temperature
+  }
+  
+  void reset() {
+    emergencyMode = false;
+    lastCommandTime = millis();
+  }
+};
