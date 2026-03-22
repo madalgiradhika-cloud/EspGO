@@ -1,0 +1,65 @@
+class ObstacleAvoidance {
+private:
+  enum AvoidanceState {
+    NORMAL,
+    SCANNING,
+    TURNING,
+    RECOVERING
+  };
+  
+  AvoidanceState state = NORMAL;
+  unsigned long stateStartTime = 0;
+  int scanAngle = 0;
+  
+public:
+  void update(int frontDistance, int leftDistance, int rightDistance) {
+    switch(state) {
+      case NORMAL:
+        if(frontDistance < 30) {
+          state = SCANNING;
+          stateStartTime = millis();
+          stopMotors();
+        }
+        break;
+        
+      case SCANNING:
+        if(millis() - stateStartTime < 1000) {
+          // Scan left and right
+          if(scanAngle == 0) {
+            // Rotate left
+            motorControl(0, TURN_SPEED, "LEFT");
+            scanAngle = leftDistance;
+          } else {
+            // Rotate right
+            motorControl(TURN_SPEED, 0, "RIGHT");
+            scanAngle = rightDistance;
+          }
+        } else {
+          // Choose best path
+          state = TURNING;
+          stateStartTime = millis();
+        }
+        break;
+        
+      case TURNING:
+        if(scanAngle > rightDistance) {
+          motorControl(0, TURN_SPEED, "LEFT");
+        } else {
+          motorControl(TURN_SPEED, 0, "RIGHT");
+        }
+        
+        if(millis() - stateStartTime > 800) {
+          state = RECOVERING;
+          stateStartTime = millis();
+        }
+        break;
+        
+      case RECOVERING:
+        motorControl(BASE_SPEED, BASE_SPEED, "FORWARD");
+        if(millis() - stateStartTime > 2000) {
+          state = NORMAL;
+        }
+        break;
+    }
+  }
+};
