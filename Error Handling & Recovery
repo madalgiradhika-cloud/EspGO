@@ -1,0 +1,40 @@
+class ErrorHandler {
+private:
+  struct Error {
+    String code;
+    String message;
+    unsigned long timestamp;
+    bool resolved;
+  };
+  
+  Error errors[20];
+  int errorCount = 0;
+  
+public:
+  void logError(String code, String message) {
+    if(errorCount < 20) {
+      errors[errorCount] = {code, message, millis(), false};
+      errorCount++;
+    }
+    
+    // Take action based on error
+    if(code == "MOTOR_OVERHEAT") {
+      stopMotors();
+    } else if(code == "GPS_NO_FIX") {
+      // Switch to dead reckoning
+    }
+  }
+  
+  void attemptRecovery() {
+    // Try to recover from errors
+    for(int i = 0; i < errorCount; i++) {
+      if(!errors[i].resolved && millis() - errors[i].timestamp > 5000) {
+        // Attempt recovery
+        if(errors[i].code == "MOTOR_OVERHEAT") {
+          // Cool down motors
+        }
+        errors[i].resolved = true;
+      }
+    }
+  }
+};
